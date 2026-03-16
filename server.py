@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """
-Encryption Server + Padding Oracle  (Terminal 1)
-
-Run this in one terminal. Type plaintext messages, they get encrypted
-with AES-128-CBC + PKCS#7 padding and sent to the attacker.
-
-Flask runs silently in the background on port 5000 to serve /oracle requests.
+Encryption Server + Padding Oracle
+Run in Terminal 1. Type plaintext, it encrypts with AES-CBC + PKCS#7
+and sends ciphertext to the attacker on port 5001.
+Exposes /oracle on port 5000 — only answers "is padding valid?" (yes/no).
 """
 
 import os
-import sys
 import threading
 import logging
 from flask import Flask, request, jsonify
@@ -17,30 +14,19 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 import requests as http_req
 
-# ──────────────────────────────────────────────
-# HARDCODED / CONFIGURABLE VALUES
-# ──────────────────────────────────────────────
-BLOCK_SIZE   = 16          # AES block size (128 bits) — fixed by AES spec
-KEY_SIZE     = 16          # AES-128 = 16 bytes, AES-192 = 24, AES-256 = 32
-KEY          = os.urandom(KEY_SIZE)   # random key, generated fresh each run
-PADDING      = "PKCS#7"   # padding standard used
-SERVER_PORT  = 5000        # port this server listens on
-ATTACKER_URL = "http://127.0.0.1:5001/capture"  # where to send ciphertext
-# ──────────────────────────────────────────────
-
-oracle_queries = 0
+# --- Hardcoded values ---
+BLOCK_SIZE = 16                        # AES block size: 16 bytes (128 bits)
+KEY = os.urandom(16)                   # AES-128 key: 16 bytes, random each run
+SERVER_PORT = 5000
+ATTACKER_URL = "http://127.0.0.1:5001/capture"
 
 app = Flask(__name__)
-log = logging.getLogger("werkzeug")
-log.setLevel(logging.ERROR)
+logging.getLogger("werkzeug").setLevel(logging.ERROR)  # hide flask logs
 
 
 @app.route("/oracle", methods=["POST"])
 def oracle():
-    """Only answers: is the PKCS#7 padding valid? True or False."""
-    global oracle_queries
-    oracle_queries += 1
-
+    """The vulnerability: only tells if PKCS#7 padding is valid or not."""
     data = request.get_json(force=True)
     ct_hex = data.get("ciphertext", "")
 
@@ -68,86 +54,59 @@ def oracle():
     return jsonify({"valid": valid})
 
 
-def start_flask():
-    app.run(host="127.0.0.1", port=SERVER_PORT, threaded=True)
-
-
-def print_config():
-    print("=" * 55)
-    print("  ENCRYPTION SERVER  (Padding Oracle)")
-    print("=" * 55)
-    print()
-    print("  Hardcoded values:")
-    print(f"    Algorithm    : AES-{KEY_SIZE * 8}-CBC")
-    print(f"    Block size   : {BLOCK_SIZE} bytes ({BLOCK_SIZE * 8} bits)")
-    print(f"    Key size     : {KEY_SIZE} bytes ({KEY_SIZE * 8} bits)")
-    print(f"    Padding      : {PADDING}")
-    print(f"    Key (hex)    : {KEY.hex()}")
-    print(f"    Server port  : {SERVER_PORT}")
-    print(f"    Attacker URL : {ATTACKER_URL}")
-    print()
-    print("  The /oracle endpoint only reveals if padding is valid.")
-    print("  The attacker never sees the key.")
-    print("-" * 55)
-    print()
-
-
 def main():
-    print_config()
+    # start flask in background thread
+    t = threading.Thread(target=lambda: app.run(host="127.0.0.1", port=SERVER_PORT, threaded=True), daemon=True)
+    t.start()
 
-    flask_thread = threading.Thread(target=start_flask, daemon=True)
-    flask_thread.start()
-    print(f"  [OK] Oracle listening on port {SERVER_PORT}\n")
+    print("=" * 50)
+    print("  ENCRYPTION SERVER + PADDING ORACLE")
+    print("=" * 50)
+    print(f"  Algorithm  : AES-128-CBC")
+    print(f"  Block size : {BLOCK_SIZE} bytes")
+    print(f"  Padding    : PKCS#7")
+    print(f"  Key (hex)  : {KEY.hex()}")
+    print(f"  Oracle     : http://127.0.0.1:{SERVER_PORT}/oracle")
+    print("=" * 50)
+    print()
 
     while True:
         try:
-            plaintext = input("  Enter message (or 'quit'): ").strip()
+            msg = input("Enter plaintext (or 'quit'): ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\n  [*] Input ended. Oracle stays alive (Ctrl+C to stop).")
-            # Keep the oracle running so the attacker can still query it
+            print("\nInput closed. Oracle stays alive for attacker.")
             try:
-                flask_thread.join()
+                t.join()
             except KeyboardInterrupt:
                 pass
-            print("  Bye.")
             return
 
-        if not plaintext:
+        if not msg:
             continue
-        if plaintext.lower() == "quit":
-            print("  Bye.")
+        if msg.lower() == "quit":
             break
 
-        pt_bytes = plaintext.encode()
+        # encrypt
         iv = os.urandom(BLOCK_SIZE)
         cipher = AES.new(KEY, AES.MODE_CBC, iv=iv)
-        ct = cipher.encrypt(pad(pt_bytes, BLOCK_SIZE))
+        padded = pad(msg.encode(), BLOCK_SIZE)
+        ct = cipher.encrypt(padded)
+        pad_count = len(padded) - len(msg.encode())
 
-        padded_len = len(pad(pt_bytes, BLOCK_SIZE))
-        pad_bytes_added = padded_len - len(pt_bytes)
+        print(f"\nPlaintext       : {msg}")
+        print(f"Plaintext bytes : {len(msg.encode())}")
+        print(f"PKCS#7 padding  : added {pad_count} bytes of value 0x{pad_count:02x}")
+        print(f"After padding   : {len(padded)} bytes ({len(padded)//BLOCK_SIZE} block(s))")
+        print(f"IV  (hex)       : {iv.hex()}")
+        print(f"CT  (hex)       : {ct.hex()}")
+        print(f"IV+CT (hex)     : {(iv+ct).hex()}")
 
-        print()
-        print(f"  Plaintext      : {plaintext}")
-        print(f"  Plaintext bytes: {len(pt_bytes)}")
-        print(f"  PKCS#7 padding : {pad_bytes_added} bytes of value 0x{pad_bytes_added:02x}")
-        print(f"  Padded length  : {padded_len} bytes ({padded_len // BLOCK_SIZE} blocks)")
-        print(f"  IV       (hex) : {iv.hex()}")
-        print(f"  CT       (hex) : {ct.hex()}")
-        print(f"  Full IV+CT     : {(iv + ct).hex()}")
-
-        delivered = False
+        # send to attacker
         try:
-            http_req.post(
-                ATTACKER_URL,
-                json={"ciphertext": (iv + ct).hex()},
-                timeout=3,
-            )
-            delivered = True
+            http_req.post(ATTACKER_URL, json={"ciphertext": (iv+ct).hex()}, timeout=3)
+            print(f"Status          : Sent to attacker")
         except Exception:
-            pass
-
-        status = "SENT to attacker" if delivered else "FAILED (attacker not running?)"
-        print(f"  Status         : {status}")
+            print(f"Status          : Attacker not running")
         print()
 
 

