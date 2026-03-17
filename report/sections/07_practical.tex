@@ -1,0 +1,18 @@
+\section{Why the Attack Works in Practice}
+
+At first sight, a single valid-or-invalid bit seems too weak to reveal a message. In practice, it is enough because the attacker controls the input and can repeat the experiment many times. Each oracle query tests one hypothesis about the decrypted bytes. Over hundreds or thousands of such tests, the attacker gradually reduces uncertainty until the plaintext is known.
+
+Several engineering decisions make this possible:
+
+\begin{itemize}
+    \item \textbf{Unauthenticated decryption.} The receiver decrypts before confirming that the ciphertext is genuine.
+    \item \textbf{Distinguishable failures.} Padding errors, MAC errors, connection aborts, or timing differences reveal different outcomes.
+    \item \textbf{Retry opportunities.} Web requests, API calls, or protocol handshakes can often be repeated many times.
+    \item \textbf{Predictable secret placement.} Cookies, tokens, and structured messages often appear at stable positions in encrypted records.
+\end{itemize}
+
+Another practical point is that not all padding oracles look the same. Some systems leak the oracle directly through an explicit error. Others leak it indirectly through elapsed time or subtle changes in code path. Lucky13 is a classic example of a related CBC attack where timing differences during MAC and padding processing were enough to create a side channel. Lucky13 is not the main topic of this report, but it reinforces the same design lesson: decryption behavior itself can become a leakage source.
+
+The attack also works because the adversary can manipulate one block to learn about the next block. This means a protocol does not need to reveal the entire decrypted message. Even small fragments of post-decryption logic can be enough. A parser rejecting malformed padding, a web application returning a different error page, or a TLS implementation taking a slightly different amount of time may all act as an oracle.
+
+In other words, the attack succeeds not because the underlying block cipher is weak, but because the surrounding system leaks information after decryption and before the ciphertext is authenticated.

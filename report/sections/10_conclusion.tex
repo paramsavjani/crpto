@@ -1,0 +1,7 @@
+\section{Learning Outcomes and Conclusion}
+
+This project leads to several important learning outcomes. First, CBC mode is easy to understand algebraically, but that same algebra explains why active tampering is dangerous. Second, padding is not just a formatting detail. Once padding validation becomes visible to an attacker, it becomes a cryptographic side channel. Third, chosen-ciphertext attacks can be devastating even when the attacker never obtains the key and never sees the plaintext directly.
+
+POODLE provides the real-world lesson. A combination of legacy protocol support, downgrade behavior, and weak CBC padding handling turned a subtle theoretical issue into a serious web security problem. The local Python demonstration then shows the same logic in a controlled way: modify a previous block, ask the oracle whether padding is valid, and recover bytes one by one.
+
+The final conclusion is that classic encryption without authentication is not sufficient for modern secure systems. CBC mode by itself does not stop an active attacker from tampering with ciphertext. The correct modern answer is authenticated encryption, careful protocol design, and the removal of obsolete fallback behavior. That is why current practice favors AEAD-based protocols and why old CBC padding failures remain an important topic in applied cryptography education.
