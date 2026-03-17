@@ -1,0 +1,38 @@
+\section{Brief Implementation Overview of the Python Demo}
+
+To support the theoretical discussion, the project includes a compact Python demonstration. The implementation is intentionally local and simplified so that the attack can be observed step by step in a terminal.
+
+\begin{table}[H]
+    \centering
+    \caption{Implementation stack used in the project demonstration}
+    \label{tab:implementation-stack}
+    \begin{tabular}{@{}ll@{}}
+        \toprule
+        Component & Choice \\
+        \midrule
+        Programming language & Python 3 \\
+        Symmetric cipher library & PyCryptodome \\
+        Networking framework & Flask + HTTP requests \\
+        Mode of operation & AES-128-CBC \\
+        Padding scheme & PKCS\#7 \\
+        Demonstration style & Local terminal-based CBC oracle demo \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The server script plays two roles. First, it encrypts user-provided plaintext under AES-CBC with a random IV. Second, it exposes an oracle endpoint that answers a very narrow question: whether the decrypted final block has valid PKCS\#7 padding. This models the vulnerable system.
+
+The attacker script receives the ciphertext, splits it into blocks, and attacks one target block at a time. For each byte position, the script forges a previous block, submits candidate ciphertexts to the oracle, and checks which candidate produces valid padding. When that happens, the script computes the corresponding intermediate byte and then the original plaintext byte. The process repeats from right to left until the entire plaintext is recovered.
+
+This implementation demonstrates the core idea clearly:
+
+\begin{itemize}
+    \item the attacker never uses the encryption key,
+    \item the attacker does not decrypt the target block directly,
+    \item the only information leaked by the oracle is padding validity, and
+    \item that single bit is still sufficient to recover plaintext.
+\end{itemize}
+
+The demo is not a complete reproduction of POODLE. It does not model browser fallback, real SSL 3.0 records, or web cookie extraction. Instead, it isolates the algebra and oracle behavior that make the broader family of attacks possible. This makes it suitable for classroom demonstration, report discussion, and viva explanation.
+
+If the project were extended, tools such as Burp Suite could be added to observe or manipulate traffic in a web setting. For the current submission, the Python demo is enough to show the cryptographic weakness directly.

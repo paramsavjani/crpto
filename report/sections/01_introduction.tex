@@ -1,0 +1,18 @@
+\section{Introduction and Project Objective}
+
+Block ciphers operate on fixed-size blocks, so practical systems need a mode of operation to encrypt messages of arbitrary length. CBC mode became one of the most widely deployed solutions because it is simple, efficient, and easy to implement with existing block ciphers such as AES. For many years CBC appeared to be a reasonable default choice for secure communication, especially in transport protocols and application-layer systems that needed confidentiality.
+
+However, confidentiality alone is not enough when an attacker can actively interfere with the communication channel. If the receiver decrypts a modified ciphertext and then reveals whether the result is properly padded, the receiver becomes an oracle. The attacker does not need the encryption key. Instead, the attacker repeatedly submits carefully forged ciphertext blocks, observes the oracle's answer, and gradually reconstructs the plaintext. This is a chosen-ciphertext attack because the attacker chooses the ciphertexts to be tested and learns from the receiver's behavior.
+
+The goal of this project is to explain the padding oracle problem clearly and connect theory to practice. The report therefore has four concrete objectives:
+
+\begin{itemize}
+    \item explain the minimum CBC background needed to understand the attack,
+    \item show how PKCS\#7 padding can leak information to an attacker,
+    \item derive the mathematics that allow byte-by-byte plaintext recovery, and
+    \item study POODLE as a historical case where these ideas became a serious protocol vulnerability.
+\end{itemize}
+
+The report also includes a short implementation overview of a Python demonstration. The code implements a vulnerable server and an attacker that recovers plaintext through a padding oracle. This implementation is intentionally simplified. It captures the logic of a CBC padding oracle attack, but it is not a full reproduction of browser downgrade behavior or SSL 3.0 record processing. That distinction is important for technical accuracy and for viva discussion.
+
+The central claim of the report is that \textbf{encryption without authentication is insufficient}. CBC mode is not ``broken'' in the sense that the block cipher itself fails. The problem is that unauthenticated decryption combined with observable error behavior leaks information. Once that happens, the confidentiality guarantee collapses.

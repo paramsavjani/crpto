@@ -1,0 +1,19 @@
+\section{Padding Oracle Attack Model}
+
+In a padding oracle attack, the attacker is assumed to be active on the communication path. The attacker can intercept ciphertext, alter selected bytes, submit the modified ciphertext to the target system, and observe the target's response. This makes the attack a chosen-ciphertext attack rather than a passive attack on captured data.
+
+The oracle does not need to reveal the plaintext, the key, or even a detailed parsing error. It only needs to distinguish between ``valid'' and ``invalid'' outcomes after decryption. Formally, the oracle can be modeled as a function
+
+\[
+\mathcal{O}(C') =
+\begin{cases}
+1 & \text{if decrypted padding is valid,} \\
+0 & \text{otherwise.}
+\end{cases}
+\]
+
+Here $C'$ is a ciphertext chosen by the attacker. The attacker uses the answer to test hypotheses about the decrypted block.
+
+The typical target is a two-block fragment: the attacker chooses a forged block $C'_{i-1}$ and appends the real ciphertext block $C_i$. The receiver decrypts $C_i$ normally, XORs the result with the forged previous block, and then performs padding validation on the resulting plaintext block. The attacker never sees that plaintext block directly, but the oracle reveals whether it ends with a valid padding pattern.
+
+This attack model is powerful because it converts a very small side channel into a decryption tool. If a server validates padding before authenticating the message, or if the server exposes different behavior for different types of failure, then each oracle query gives the attacker information. Repeating the process across many guesses lets the attacker recover the whole message block by block.

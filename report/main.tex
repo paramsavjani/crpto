@@ -1,0 +1,87 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!50!black,
+    urlcolor=blue!50!black,
+    citecolor=blue!50!black
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.7em}
+\setlength{\tabcolsep}{8pt}
+\setlength{\emergencystretch}{2em}
+\renewcommand{\arraystretch}{1.2}
+
+\title{Padding Oracle Attacks on CBC Mode\\\large Theory, POODLE, and a Python Demonstration}
+\author{Intro to Cryptography Project Report}
+\date{March 2026}
+
+\begin{document}
+
+\hypersetup{pageanchor=false}
+\begin{titlepage}
+    \centering
+    \vspace*{2.8cm}
+    {\Huge \bfseries Padding Oracle Attacks on CBC Mode\par}
+    \vspace{2cm}
+
+    {\large Intro to Cryptography Project Report\par}
+    \vspace{1.2cm}
+
+    \begin{tabular}{ll}
+        \textbf{Course:} & Intro to Cryptography \\
+        \textbf{Topic:} & Padding Oracle Attacks on CBC Mode \\
+        \textbf{Group Number:} & 8 \\
+    \end{tabular}
+
+    \vspace{1.2cm}
+
+    {\large \textbf{Group 8 Members}\par}
+    \vspace{0.5cm}
+
+    \begin{tabular}{ll}
+        Jeetrajsinh Gohil & 202303017 \\
+        Kaushal Nandaniya & 202303036 \\
+        Rom Tala & 202303051 \\
+        Param Savjani & 202303046 \\
+        Dhruvil Patel & 202301035 \\
+        Tirth Kansagra & 202303055 \\
+        Aryan Rathod & 202301164 \\
+        Bhensdadia Vasu & 202301416 \\
+        Zeel Dadhaniya & 202303010 \\
+        Khush Patel & 202301142 \\
+    \end{tabular}
+\end{titlepage}
+\hypersetup{pageanchor=true}
+
+\begin{abstract}
+Cipher Block Chaining (CBC) was widely used in network protocols and application-layer encryption before authenticated encryption became standard. By itself, CBC only gives confidentiality against passive observation. Once an attacker can modify ciphertext and learn even one bit about the result of decryption, for example whether PKCS\#7 padding is valid, the attacker can recover plaintext block by block without learning the secret key. This report explains CBC mode, padding validation, the chosen-ciphertext setting, and the byte-recovery mathematics behind padding oracle attacks. It then studies POODLE as the main case study, clarifies why it is historically important, and distinguishes that real-world protocol attack from a simplified local Python demonstration. The report closes with defenses, current industry practice, and the main lessons that motivate the use of authenticated encryption in modern systems.
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+\input{sections/01_introduction}
+\input{sections/02_cbc}
+\input{sections/03_padding}
+\input{sections/04_oracle_model}
+\input{sections/05_attack_math}
+\input{sections/06_poodle}
+\input{sections/07_practical}
+\input{sections/08_implementation}
+\input{sections/09_defenses}
+\input{sections/10_conclusion}
+
+\end{document}

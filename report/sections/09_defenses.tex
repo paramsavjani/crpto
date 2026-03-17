@@ -1,0 +1,31 @@
+\section{Defenses and Current Industry Practice}
+
+Padding oracle attacks are prevented by stopping the receiver from giving useful feedback on modified ciphertext. The safest solution is to use authenticated encryption instead of plain CBC encryption.
+
+\begin{itemize}
+    \item \textbf{Use authenticated encryption.} Modes such as AES-GCM and ChaCha20-Poly1305 provide both confidentiality and integrity. This means the message is not only encrypted, but also checked to see whether anyone changed it.
+    \item \textbf{Reject modified ciphertext early.} If authentication fails, the system should stop immediately. It should not continue to padding checks or reveal anything about the decrypted message.
+    \item \textbf{Do not rely on CBC alone.} CBC can hide data from a passive attacker, but it does not stop an active attacker from modifying ciphertext blocks. That is why CBC by itself is not enough for secure communication.
+    \item \textbf{Keep failure behavior uniform.} The system should not leak useful differences through error messages, timing, or connection behavior. All failures should look as similar as possible so that attackers cannot learn anything from the response.
+\end{itemize}
+
+In practice, this leads to the following recommendations:
+
+\begin{itemize}
+    \item disable SSL 3.0,
+    \item avoid old CBC-based cipher suites,
+    \item use TLS 1.3 whenever possible,
+    \item if TLS 1.2 must be used, prefer AEAD suites such as AES-GCM or ChaCha20-Poly1305,
+    \item treat constant-time processing and uniform errors as extra protection, not the main fix.
+\end{itemize}
+
+Current industry practice is based on these lessons:
+
+\begin{itemize}
+    \item SSL 3.0 is deprecated,
+    \item TLS 1.0 and TLS 1.1 are also deprecated,
+    \item TLS 1.3 uses modern authenticated encryption,
+    \item modern secure systems prefer AEAD-based designs instead of CBC with padding checks.
+\end{itemize}
+
+The main lesson is simple: \textbf{encryption alone is not enough}. Modern systems combine confidentiality and integrity so that attackers cannot learn anything useful by modifying ciphertext.

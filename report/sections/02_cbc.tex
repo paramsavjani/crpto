@@ -1,0 +1,29 @@
+\section{CBC Mode Basics}
+
+CBC mode encrypts each plaintext block only after XORing it with the previous ciphertext block. This chaining step ensures that identical plaintext blocks do not encrypt to identical ciphertext blocks, provided the initialization vector (IV) is unpredictable. If the plaintext is split into blocks $P_1, P_2, \dots, P_n$ and the ciphertext into blocks $C_1, C_2, \dots, C_n$, then CBC encryption is defined by
+
+\begin{equation}
+    C_i = E_K(P_i \oplus C_{i-1}),
+\end{equation}
+
+where $E_K$ is block-cipher encryption under key $K$ and $C_0$ denotes the IV.
+
+Decryption reverses the process:
+
+\begin{equation}
+    P_i = D_K(C_i) \oplus C_{i-1},
+\end{equation}
+
+where $D_K$ is block-cipher decryption under the same key. These two equations are the foundation of the attack. They show that every plaintext block depends not only on the current ciphertext block but also on the previous ciphertext block.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.92\textwidth]{images/cbc_decryption.png}
+    \caption{CBC decryption in block chaining mode. The XOR with the previous ciphertext block is the property that padding oracle attacks exploit.}
+    \caption*{\footnotesize Source: Wikimedia Commons, \emph{CBC decryption.svg} (public domain).}
+    \label{fig:cbc-overview}
+\end{figure}
+
+In a normal passive setting, CBC can hide the plaintext content effectively when the IV is random and the key remains secret. The difficulty begins when the attacker can tamper with the ciphertext. Because $P_i$ is produced by XORing $D_K(C_i)$ with $C_{i-1}$, changing bytes in $C_{i-1}$ predictably changes bytes in the decrypted block $P_i$. The attacker still does not know $D_K(C_i)$, but the attacker can influence the final plaintext seen by the receiver.
+
+This property has two consequences. First, tampering with one ciphertext block corrupts the next plaintext block in a controlled way. Second, if the receiver exposes any property of that corrupted plaintext, such as whether the padding is syntactically valid, the attacker can transform this malleability into a decryption attack. CBC therefore provides no built-in integrity protection. It must be combined with authentication to resist active attacks.
