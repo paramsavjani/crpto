@@ -8,13 +8,15 @@ Prints each step: every byte guess that gets a 'valid' response from the oracle.
 
 import threading
 import logging
+import socket
 import time
 from flask import Flask, request, jsonify
 import requests as http_req
 
 # --- Hardcoded values ---
 BLOCK_SIZE = 16                        # AES block size: 16 bytes (128 bits)
-ORACLE_URL = "http://127.0.0.1:5000/oracle"
+LISTEN_HOST = "0.0.0.0"
+ORACLE_PORT = 5000
 LISTEN_PORT = 5001
 
 # --- Flask app to receive ciphertext ---
@@ -42,6 +44,18 @@ def fmt(data):
     return " ".join(str(b) for b in data)
 
 
+def get_local_ip():
+    """Best-effort LAN IP discovery for same-Wi-Fi testing."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+    except OSError:
+        return "127.0.0.1"
+    finally:
+        sock.close()
+
+
 def xor_bytes(a, b):
     return bytes(x ^ y for x, y in zip(a, b))
 
@@ -53,7 +67,7 @@ def split_blocks(data):
 def ask_oracle(two_blocks):
     """Send 2 blocks to the server, get back True (padding valid) or False."""
     try:
-        resp = http_req.post(ORACLE_URL, json={"ciphertext": two_blocks.hex()}, timeout=10)
+        resp = http_req.post(app.config["ORACLE_URL"], json={"ciphertext": two_blocks.hex()}, timeout=10)
         return resp.json().get("valid", False)
     except Exception:
         return False
@@ -74,7 +88,7 @@ def padding_oracle_attack(ct_hex):
     print(f"  Block size     : {BLOCK_SIZE} bytes")
     print(f"  Blocks         : 1 IV + {num_ct_blocks} ciphertext")
     print(f"  Padding method : PKCS#7")
-    print(f"  Oracle URL     : {ORACLE_URL}")
+    print(f"  Oracle URL     : {app.config['ORACLE_URL']}")
     print("=" * 60)
 
     query_count = 0
@@ -162,8 +176,12 @@ def padding_oracle_attack(ct_hex):
 
 
 def main():
+    local_ip = get_local_ip()
+    server_ip = input("Enter server PC IP (blank for localhost): ").strip() or "127.0.0.1"
+    app.config["ORACLE_URL"] = f"http://{server_ip}:{ORACLE_PORT}/oracle"
+
     t = threading.Thread(
-        target=lambda: app.run(host="127.0.0.1", port=LISTEN_PORT, threaded=True),
+        target=lambda: app.run(host=LISTEN_HOST, port=LISTEN_PORT, threaded=True),
         daemon=True,
     )
     t.start()
@@ -173,8 +191,9 @@ def main():
     print("=" * 60)
     print(f"  Block size  : {BLOCK_SIZE} bytes")
     print(f"  Padding     : PKCS#7")
-    print(f"  Oracle URL  : {ORACLE_URL}")
-    print(f"  Listening   : port {LISTEN_PORT}")
+    print(f"  This PC IP  : {local_ip}")
+    print(f"  Oracle URL  : {app.config['ORACLE_URL']}")
+    print(f"  Listening   : http://{local_ip}:{LISTEN_PORT}/capture")
     print("=" * 60)
     print("\nWaiting for ciphertext from sender...\n")
 
