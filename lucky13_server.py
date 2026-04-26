@@ -29,8 +29,8 @@ ENC_KEY = os.urandom(16)
 MAC_KEY = os.urandom(32)
 
 SERVER_HOST = "0.0.0.0"
-SERVER_PORT = 6000
-ATTACKER_PORT = 6001
+SERVER_PORT = 5000
+ATTACKER_PORT = 5001
 
 app = Flask(__name__)
 logging.getLogger("werkzeug").setLevel(logging.ERROR)
