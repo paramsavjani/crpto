@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""
-Lucky-13 style timing attacker demo.
-Run this in Terminal 2.
-
-Receives ciphertext from lucky13_server.py, then decrypts CBC blocks
-by choosing guesses with slower oracle timing.
-"""
 
 import logging
 import socket
@@ -141,14 +134,12 @@ def lucky13_attack(ct_hex):
         recovered += pt_block
         print(f"  Recovered block bytes: {fmt(pt_block)}")
 
-    # Remove PKCS#7 padding.
     plain = recovered
     if plain:
         p = plain[-1]
         if 1 <= p <= BLOCK_SIZE and plain[-p:] == bytes([p]) * p:
             plain = plain[:-p]
 
-    # Remove trailing HMAC if present (TLS-style record).
     msg_only = plain[:-MAC_SIZE] if len(plain) >= MAC_SIZE else plain
 
     elapsed = time.time() - start

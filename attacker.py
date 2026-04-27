@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""
-Padding Oracle Attacker
-Run in Terminal 2. Receives ciphertext from the sender,
-then decrypts it using the CBC padding oracle attack.
-Prints each step: every byte guess that gets a 'valid' response from the oracle.
-"""
 
 import threading
 import logging
@@ -13,7 +7,6 @@ import time
 from flask import Flask, request, jsonify
 import requests as http_req
 
-# --- Config ---
 BLOCK_SIZE = 16
 LISTEN_HOST = "0.0.0.0"
 ORACLE_PORT = 5000

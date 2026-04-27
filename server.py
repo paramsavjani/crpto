@@ -1,11 +1,4 @@
 #!/usr/bin/env python3
-"""
-Encryption Server + Padding Oracle
-Run in Terminal 1. Type plaintext, it encrypts with AES-CBC + PKCS#7
-and sends ciphertext to the attacker on port 5001.
-Exposes /oracle on port 5000 — only answers "is padding valid?" (yes/no).
-"""
-
 import os
 import socket
 import threading
@@ -15,7 +8,6 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 import requests as http_req
 
-# --- Config ---
 BLOCK_SIZE = 16
 KEY = os.urandom(16)
 SERVER_HOST = "0.0.0.0"

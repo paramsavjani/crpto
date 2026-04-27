@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""
-Secure server against POODLE/padding-oracle style attacks.
-
-Uses AES-GCM (AEAD):
-- No PKCS#7 padding oracle exists.
-- Any ciphertext modification fails tag verification.
-
-Run this instead of server.py. If attacker.py tries its CBC padding-oracle
-logic against this server, it will fail.
-"""
-
 import logging
 import os
 import socket
@@ -19,7 +8,7 @@ import requests as http_req
 from Crypto.Cipher import AES
 from flask import Flask, jsonify, request
 
-KEY = os.urandom(16)  # AES-128-GCM key
+KEY = os.urandom(16)
 NONCE_SIZE = 12
 TAG_SIZE = 16
 
@@ -55,10 +44,6 @@ def encrypt_gcm(message):
 
 @app.route("/oracle", methods=["POST"])
 def oracle():
-    """
-    Compatibility endpoint for attacker.py.
-    Unlike CBC padding-oracle, this leaks nothing useful.
-    """
     try:
         blob = bytes.fromhex(request.get_json(force=True).get("ciphertext", ""))
         if len(blob) < NONCE_SIZE + TAG_SIZE:
@@ -72,7 +57,6 @@ def oracle():
         cipher.decrypt_and_verify(ciphertext, tag)
         return jsonify({"valid": True})
     except Exception:
-        # Any tampering/noise/wrong format lands here.
         return jsonify({"valid": False})
 
 

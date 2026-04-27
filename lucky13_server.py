@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""
-Lucky-13 style timing oracle demo server.
-Run this in Terminal 1.
-
-- Encrypts plaintext with AES-CBC
-- Uses TLS-style layout: plaintext || HMAC || PKCS#7 padding
-- Exposes /lucky13_oracle that leaks timing (not explicit padding valid/invalid)
-- Sends ciphertext to attacker on /capture
-"""
-
 import hmac
 import logging
 import os
@@ -63,12 +53,6 @@ def encrypt_tls_style(msg):
 
 @app.route("/lucky13_oracle", methods=["POST"])
 def lucky13_oracle():
-    """
-    Deliberately vulnerable:
-    - checks padding first
-    - does variable amount of MAC work only when padding structure looks valid
-    - adds a clear delay gap so timing attack is stable in local demo
-    """
     try:
         ct = bytes.fromhex(request.get_json(force=True).get("ciphertext", ""))
         if len(ct) < 2 * BLOCK_SIZE or len(ct) % BLOCK_SIZE != 0:
@@ -89,14 +73,12 @@ def lucky13_oracle():
                 msg = unpadded[:-MAC_SIZE]
                 recv_mac = unpadded[-MAC_SIZE:]
 
-                # Variable work simulates MAC processing differences (Lucky-13 style).
                 loops = 80 + (len(unpadded) % BLOCK_SIZE) * 10 + pad_len * 8
                 calc = recv_mac
                 for _ in range(loops):
                     calc = hmac.new(MAC_KEY, msg, sha256).digest()
                 _ = hmac.compare_digest(calc, recv_mac)
 
-            # Strong timing signal for demo stability.
             time.sleep(0.006)
         else:
             _ = hmac.new(MAC_KEY, b"x", sha256).digest()
@@ -104,7 +86,6 @@ def lucky13_oracle():
     except Exception:
         pass
 
-    # Always generic response; attacker relies on timing.
     return jsonify({"status": "ok"})
 
 

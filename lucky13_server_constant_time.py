@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""
-Lucky-13 resistant demo server (constant-time style oracle).
-
-Goal:
-- Keep the same message format: plaintext || HMAC || PKCS#7 padding
-- Keep /lucky13_oracle endpoint
-- Make response timing as uniform as possible for valid/invalid records
-  so timing attackers cannot distinguish padding validity.
-"""
 
 import hmac
 import logging
@@ -24,8 +15,8 @@ from flask import Flask, jsonify, request
 
 BLOCK_SIZE = 16
 MAC_SIZE = 32
-FIXED_RECORD_LEN = 128  # Constant-size buffer for constant-time style processing
-FIXED_ORACLE_DELAY = 0.00006  # Same delay for every oracle request
+FIXED_RECORD_LEN = 128
+FIXED_ORACLE_DELAY = 0.00006
 
 ENC_KEY = os.urandom(16)
 MAC_KEY = os.urandom(32)
@@ -80,13 +71,6 @@ def fixed_len_slice(data, start, size):
 
 @app.route("/lucky13_oracle", methods=["POST"])
 def lucky13_oracle():
-    """
-    Constant-time style oracle:
-    - Always performs decrypt + padding check + HMAC work
-    - Always runs fixed amount of HMAC rounds on fixed-length buffers
-    - Always sleeps fixed time before returning
-    - Always returns generic response
-    """
     start = time.perf_counter()
 
     try:
@@ -94,7 +78,6 @@ def lucky13_oracle():
     except Exception:
         blob = b""
 
-    # Keep decrypt cost similar by always preparing at least one block.
     if len(blob) >= 2 * BLOCK_SIZE and len(blob) % BLOCK_SIZE == 0:
         iv, body = blob[:BLOCK_SIZE], blob[BLOCK_SIZE:]
     else:
@@ -108,17 +91,14 @@ def lucky13_oracle():
     valid_pad, pad_len = pkcs7_valid(pt)
     unpadded_len = len(pt) - pad_len if valid_pad else len(pt)
 
-    # Constant-length message/mac extraction for equalized MAC work.
     msg_fixed = fixed_len_slice(pt, 0, FIXED_RECORD_LEN)
     recv_mac_fixed = fixed_len_slice(pt, max(0, unpadded_len - MAC_SIZE), MAC_SIZE)
 
-    # Fixed number of HMAC rounds no matter valid or invalid.
     calc = b"\x00" * MAC_SIZE
     for _ in range(3):
         calc = hmac.new(MAC_KEY, msg_fixed, sha256).digest()
     _ = hmac.compare_digest(calc, recv_mac_fixed)
 
-    # Force same minimum response duration.
     elapsed = time.perf_counter() - start
     remaining = FIXED_ORACLE_DELAY - elapsed
     if remaining > 0:
